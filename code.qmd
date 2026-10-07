@@ -1,0 +1,1613 @@
+---
+title: "Global genomic epidemiology of multi-carbapenemase Enterobacterales "
+subtitle: Code for plots and statistical analyses
+keep-md: true
+format: 
+  html:
+    toc: true
+    embed-resources: true
+author: 
+  name: Nicole Lerminiaux
+date: today
+date-format: iso
+---
+
+# Setup
+```{r}
+#| label: setup
+#| warning: false
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(here)
+library(readr)
+library(ggplot2)
+library(tibble)
+library(patchwork)
+library(ComplexUpset)
+library(ggpattern)
+library(gridpattern)
+library(networkD3)
+library(treemapify)
+library(logistf)
+library(Matrix)
+library(rstatix)
+library(goftest)
+
+# load data
+meta <- readRDS(here("data", "metadata.RDS"))
+gene <- readRDS(here("data", "gene.RDS"))
+contigs <- readRDS(here("data", "contig_list.RDS"))
+amr <- readRDS(here("data", "amr.RDS"))
+hvkp <- readRDS(here("data", "hvkp.RDS"))
+ta <- readRDS(here("data", "toxin_antitoxin.RDS"))
+meta_ncbi <- readRDS(here("data", "metadata_ncbi_enterobacterales.RDS"))
+carbs_ncbi <- readRDS(here("data", "ncbi_enterobacterales_carbs.RDS"))
+meta_raw <- readRDS(here("data", "metadata_raw.RDS"))
+```
+
+# Figures
+
+### Figure 1: Most common carbapenemase groups coloured by genomic location
+```{r}
+#| label: fig-plot-1
+#| fig-cap: Most common carbapenemase groups coloured by genomic location. 
+#| fig-height: 4
+#| warning: false
+
+cupset_setup <- meta |> 
+  separate_longer_delim(carb_group, delim = ", ") |> 
+  select(accession, multicarb_location, genus, continent, isolation_source_group, carb_group) |> 
+  distinct() |> 
+  add_column(Present=1) |> 
+  pivot_wider(names_from=carb_group, values_from=Present, values_fill = 0) |> 
+  column_to_rownames("accession") |> 
+  rename(`OXA-48-like` = OXA) |> 
+  mutate(multicarb_location = factor(multicarb_location, levels = c("one plas", "two plas", "three or more plas", "one plas and chr", "two plas and chr", "three or more plas and chr", "chr")))
+carb_list <- c("IMP", "KPC", "NDM", "OXA-48-like", "VIM")
+
+upset_plt <- upset(cupset_setup, 
+  carb_list,
+  min_size = 5,
+  name = "Carbapenemase combinations",
+  base_annotations = list('Number of genomes' = intersection_size(mapping = aes(fill = multicarb_location), text = list(size = 3)) +
+    scale_fill_manual(values = c("#ffc098", "#e9742a", "#93532a", "#f4c5ff", "#da62f5","#793a87", "#4182f3")) + 
+    labs(fill = "Multi-carbapenemase\nlocation")),
+  set_sizes=(upset_set_size() + 
+    ylab('Count') + 
+    theme(axis.text.x=element_text(angle=90, size = 8))),
+  guides = "collect",
+  width_ratio = 0.1);upset_plt
+```
+
+### Figure 2: Most common carbapenemase allelic combinations found across high-risk lineages
+
+Note legend was coloured manually in Inkscape. 
+```{r}
+#| label: fig-plot-2
+#| fig-cap: Most common carbapenemase allelic combinations found across high-risk lineages. 
+#| fig-height: 6
+#| warning: false
+
+# set up stripe patterns
+stripe_imp <- gridpattern::patternFill("stripe", fill = c("#D55E00", "#D55E00"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_imp_kpc <- gridpattern::patternFill("stripe", fill = c("#D55E00", "#56B4E9"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_imp_ndm <- gridpattern::patternFill("stripe", fill = c("#D55E00", "#E69F00"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_imp_oxa <- gridpattern::patternFill("stripe", fill = c("#D55E00", "#CC79A7"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_imp_vim <- gridpattern::patternFill("stripe", fill = c("#D55E00", "#0072B2"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_kpc <- gridpattern::patternFill("stripe", fill = c("#56B4E9", "#56B4E9"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_kpc_ndm <- gridpattern::patternFill("stripe", fill = c("#56B4E9", "#E69F00"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_kpc_oxa <- gridpattern::patternFill("stripe", fill = c("#56B4E9", "#CC79A7"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_kpc_oxa_vim <- gridpattern::patternFill("stripe", fill = c("#56B4E9", "#CC79A7", "#0072B2"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_kpc_vim <- gridpattern::patternFill("stripe", fill = c("#56B4E9", "#0072B2"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_ndm <- gridpattern::patternFill("stripe", fill = c("#E69F00", "#E69F00"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_ndm_oxa <- gridpattern::patternFill("stripe", fill = c("#E69F00", "#CC79A7"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_oxa <- gridpattern::patternFill("stripe", fill = c("#CC79A7", "#CC79A7"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_oxa_vim <- gridpattern::patternFill("stripe", fill = c("#CC79A7", "#0072B2"), linewidth = NA, spacing = 0.1, density = 1)
+stripe_vim <- gridpattern::patternFill("stripe", fill = c("#0072B2", "#0072B2"), linewidth = NA, spacing = 0.1, density = 1)
+
+meta |> 
+  filter((genus == "Escherichia" & (mlst == "410" | mlst == "167" | mlst == "361")) |
+  (str_detect(organism, "Klebsiella pneumoniae") & (mlst == "11" | mlst == "15" | mlst == "16" | mlst == "258" | mlst == "147" | mlst == "512")) | (genus == "Enterobacter" & (mlst == "171" | mlst == "79")) | (genus == "Citrobacter" & (mlst == "22"))) |> 
+  count(genus, mlst, carb_group, carb) |> 
+  mutate(carb_label = str_replace_all(carb, " ", "\n")) |> 
+  mutate(carb_group = str_replace(carb_group, "OXA", "OXA-48-like")) |> 
+  ggplot(aes(area=n, fill = carb_group)) +
+  geom_treemap(color="white", show.legend = TRUE) + # fill = list(stripe_imp_ndm, stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_kpc_oxa_vim,stripe_ndm_oxa,stripe_ndm_oxa,stripe_oxa,stripe_oxa,stripe_oxa_vim, stripe_vim,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa, stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa, stripe_ndm_oxa,stripe_ndm_oxa,stripe_kpc_ndm,stripe_kpc_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_imp_kpc,stripe_imp_kpc,stripe_imp_oxa,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_oxa,stripe_kpc_oxa,stripe_kpc_vim,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_oxa,stripe_imp_kpc,stripe_imp_vim,stripe_kpc_ndm,stripe_kpc_oxa,stripe_kpc_vim,stripe_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_oxa,stripe_oxa,stripe_oxa,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_ndm,stripe_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_oxa,stripe_kpc,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_kpc_ndm,stripe_ndm,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_ndm_oxa,stripe_oxa,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_kpc_vim,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc,stripe_kpc_ndm,stripe_kpc_oxa,stripe_kpc_oxa,stripe_kpc_oxa)) +
+  geom_treemap_text(aes(label = paste0(n, "\n", carb_label)), place = "centre") +
+  theme_bw() +
+  facet_wrap(~ factor(mlst, levels = c("11", "16", "147", "258", "15", "512", "410", "167", "361", "171", "79", "22"), labels=c("K. pneumoniae\nST11\n(n=232)", "K. pneumoniae\nST16\n(n=62)","K. pneumoniae\nST147\n(n=57)","K. pneumoniae\nST258\n(n=60)","K. pneumoniae\nST15\n(n=39)","K. pneumoniae\nST512\n(n=31)","E. coli\nST410\n(n=30)","E. coli\nST167\n(n=15)","E. coli\nST361\n(n=13)","E. hormaechei\nST171\n(n=13)","E. hormaechei\nST79\n(n=13)","C. freundii\nST22\n(n=27)"))) +
+  labs(fill = "Carbapenemase\ngroup")
+# legend coloured manually in Inkscape
+```
+
+### Figure 4: Density of carbapenemase gene distances among proportion of plasmid length faceted by carbapenemase group
+
+```{r}
+#| label: fig-plot-4
+#| fig-cap: Density of carbapenemase gene distances among proportion of plasmid length faceted by carbapenemase group. 
+#| fig-height: 4
+#| warning: false
+
+tn2 <- gene |> 
+  filter(location == "plasmid") |> 
+  group_by(accession, contig_id, contig_length) |> 
+  mutate(halfsize = contig_length/2) |>
+  ungroup() 
+
+plas_list <- gene |> filter(location == "plasmid") |> pull(contig_id) |> unique()
+temp_list <- list()
+for (i in 1:length(plas_list)){
+  cnt <- tn2 |> filter(contig_id == plas_list[i]) |> nrow()
+  
+  temp <- tn2 |> filter(contig_id == plas_list[i])
+  
+  for (j in 1:cnt) {
+    
+    if(j < cnt){
+    
+    temp$diff2[j] <- ifelse((temp$start[j+1] - temp$start[j] < temp$halfsize[j]), 
+            abs(temp$start[j+1] - temp$start[j]), 
+            abs(temp$start[j+1] - temp$start[j] - temp$contig_length[j]))
+           
+    } else {
+      
+      temp$diff2[j] <-temp$start[1] + temp$contig_length[j] - temp$start[j]
+    }
+    
+    temp_list[[i]] <- temp |> select(contig_id, start, diff2)
+  }
+}
+
+tn3 <- tn2 |> left_join(bind_rows(temp_list), by = c("contig_id", "start"))
+
+tn4 <- tn3 |> 
+  filter(!(contig_length == diff2)) |> # remove those with only one carb on plas
+  group_by(contig_id, contig_length, rep_type) |> 
+  summarize(min = min(diff2)) |> 
+  ungroup() |> 
+  mutate(prop = min/contig_length) |> 
+  left_join((gene |> group_by(contig_id) |> summarize(carb = toString(gene, sep = ", "))  |> filter(str_count(carb, ",") > 0)), by = "contig_id") |> 
+  mutate(carb_group = case_when(
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "IMP, KPC, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "IMP, KPC, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "IMP, KPC, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "IMP, NDM, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "IMP, NDM, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "IMP, OXA, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "KPC, NDM, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "KPC, NDM, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "KPC, OXA, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "NDM, OXA, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") ~ "IMP, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") ~ "IMP, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "VIM") ~ "IMP, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") ~ "IMP, KPC",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "KPC, NDM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "KPC, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "KPC, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "NDM, OXA",
+    str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "NDM, VIM",
+    str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "OXA, VIM",
+    str_detect(carb, "NDM") ~ "NDM",
+    str_detect(carb, "OXA") ~ "OXA",
+    str_detect(carb, "KPC") ~ "KPC",
+    str_detect(carb, "IMP") ~ "IMP",
+    str_detect(carb, "VIM") ~ "VIM",
+    str_detect(carb, "IMI") ~ "IMI",
+    TRUE ~ NA
+  )) 
+
+tn5 <- tn4 |> 
+  mutate(carb_group = ifelse(carb_group != "NDM, OXA" & carb_group != "KPC, NDM" & carb_group != "KPC" & carb_group != "NDM" & carb_group != "OXA", "other", carb_group)) |> 
+  mutate(carb_group = factor(carb_group, levels = c("KPC", "KPC, NDM", "NDM", "NDM, OXA", "OXA", "other"))) 
+
+density_plt <- tn5 |>
+  left_join(tn5 |> count(carb_group, name = "total_carb_group"), by = "carb_group") |> 
+  mutate(label = paste0(carb_group, "\n(n=", total_carb_group, ")")) |> 
+  mutate(label = str_replace(label, "OXA", "OXA-48-like")) |> 
+  mutate(label = factor(label, levels = c("KPC\n(n=193)", "KPC, NDM\n(n=33)", "NDM\n(n=78)", "NDM, OXA-48-like\n(n=38)", "OXA-48-like\n(n=27)", "other\n(n=53)"))) |> 
+  ggplot(aes(x = prop)) +
+  geom_density(fill="#e9742a", color="#e9742a", alpha=0.5) +
+  labs(y = "Density", x = "Plasmid length (proportion)") +
+  facet_wrap(~ label, scales = "free_y") +
+  theme_bw();density_plt
+```
+
+
+### Supplementary Figure 1: Proportion of all Enterobacterales genomes in NCBI (≤ 20 contigs) that encoded zero, one, or multiple carbapenemase genes
+
+```{r}
+#| label: fig-plot-s1
+#| fig-cap: Proportion of all Enterobacterales genomes in NCBI (≤ 20 contigs) that encoded zero, one, or multiple carbapenemase genes. 
+#| fig-height: 6
+#| warning: false
+
+ncbi_any_carb_accessions <- carbs_ncbi |> 
+  distinct(accession) |> 
+  pull()
+
+ncbi_multicarb_accessions <- carbs_ncbi |> 
+  count(accession)  |> 
+  filter(n > 1) |> 
+  pull(accession)
+
+denominator <- meta_ncbi |> 
+  filter(assembly_num_contigs <= 20)  |> 
+  mutate(year = case_when(
+    year == "-" ~ NA,
+    year == "1016-08" ~ NA,
+    str_detect(year, "-") ~ str_remove(year, "-.*"), 
+    str_detect(year, "missing|Missing|unknown|N/A|n/a|na|not|Not|NOT|None|none|Unknown|restricted") ~ NA,
+    str_detect(year, "/") ~ str_remove(year, ".*/"),
+    TRUE ~ year)) |> 
+  mutate(carb = ifelse(accession %in% ncbi_any_carb_accessions, "one", "none")) |> 
+  mutate(carb = ifelse(accession %in% ncbi_multicarb_accessions, "multiple", carb)) |> 
+  mutate(year = ifelse(year < 2000, "pre-2000", year)) |> 
+  count(year, carb) |> 
+  mutate(carb = factor(carb, levels = c("none", "one", "multiple"))) 
+
+denom_a <- denominator |> 
+  ggplot(aes(x = year, y = n, fill = carb)) +
+  geom_bar(stat="identity") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust = 0.5)) +
+  scale_fill_manual(values = c("cadetblue2", "cadetblue3", "cadetblue4")) +
+  labs(y="Genome count\n(n=46,531 total)", x = "Year", fill="Carbapenemase\ngenes")
+
+denom_b <- denominator |> 
+  ggplot(aes(x = year, y = n, fill = carb)) +
+  geom_bar(stat="identity",position="fill") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust = 0.5)) +
+  scale_fill_manual(values = c("cadetblue2", "cadetblue3", "cadetblue4")) +
+  labs(y="Genome proportion\n(n=46,531 total)", x = "Year", fill="Carbapenemase\ngenes")
+
+denom_a + denom_b + plot_layout(nrow=2, guides = "collect") + plot_annotation(tag_level = "A")
+```
+
+### Supplementary Figure 2: Count of multi-carbapenemase combinations by continent over time
+
+```{r}
+#| label: fig-plot-s2
+#| fig-cap: Count of multi-carbapenemase combinations by continent over time. 
+#| fig-height: 4
+#| warning: false
+
+continents <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  mutate(carb_group_plotting = case_when(
+    str_count(carb_group, ",") > 1 ~ "other",
+    carb_group == "NDM, VIM" ~ "other",
+    carb_group == "IMP, OXA" ~ "other",
+    carb_group == "IMP, VIM" ~ "other",
+    TRUE ~ carb_group )) |> 
+  mutate(carb_group_plotting = factor(carb_group_plotting, levels = c("IMP", "IMP, KPC", "IMP, NDM", "KPC", "KPC, NDM", "KPC, OXA", "KPC, VIM", "NDM", "NDM, OXA", "OXA", "OXA, VIM", "VIM", "other"))) |>     
+  mutate(carb_group_plotting = str_replace(carb_group_plotting, "OXA", "OXA-48-like")) |> 
+  filter(!is.na(year)) |> 
+  filter(!is.na(continent)) |> 
+  left_join(meta |> count(continent, name = "total_continent"), by = "continent") |>  
+  mutate(label = paste0(continent, "\n(n=", total_continent, ")")) |> 
+  group_by(year, continent, label, carb_group_plotting)  |> 
+  count() |> 
+  ggplot(aes(x = year, y = n, fill = carb_group_plotting)) +
+  geom_bar_pattern(stat="identity", position = "stack", aes(pattern_fill = carb_group_plotting), pattern_colour = NA, pattern_density = 0.5, pattern_spacing = 0.02) + 
+  theme_bw() +
+  facet_wrap(~label)+
+  scale_fill_manual(values = c("#D55E00", "#D55E00", "#D55E00", "#56B4E9", "#56B4E9", "#56B4E9", "#56B4E9", "#E69F00", "#E69F00", "#CC79A7", "#CC79A7", "#0072B2", "grey")) +
+  scale_pattern_fill_manual(values = c("#D55E00", "#56B4E9", "#E69F00", "#56B4E9", "#E69F00", "#CC79A7", "#0072B2", "#E69F00", "#CC79A7", "#CC79A7", "#0072B2", "#0072B2", "grey")) +
+  labs(fill = "Carbapenemase\ngroup", y = "Number of\ngenomes", x = "Year of collection", pattern_fill = "Carbapenemase\ngroup") +
+  theme(axis.text.x = element_text(angle=90, vjust = 0.5, size = 6));continents
+```
+
+### Supplementary Figure 3: Linkage between carbapenemase allele combinations
+
+```{r}
+#| label: fig-plot-s3
+#| fig-cap: Linkage between carbapenemase allele combinations. 
+#| fig-height: 8
+#| warning: false
+
+doubles <- meta |> 
+  #filter for samples that have only two carbs, exclude those with more
+  filter(str_count(carb, ",") == 1) |> 
+  mutate(carb = str_remove_all(carb, "bla")) |> 
+  separate_wider_delim(carb, delim = ", ", names = c("carb1", "carb2"), too_few = "align_start") |> 
+    mutate(carb1 = case_when(
+    carb1 == "IMP" ~ "IMP novel",
+    carb1 == "KPC" ~ "KPC novel",
+    carb1 == "NDM" ~ "NDM novel",
+    carb1 == "OXA" ~ "OXA-48-like novel",
+    carb1 == "VIM" ~ "VIM novel",
+    TRUE ~ carb1)) |> 
+  mutate(carb2 = case_when(
+    carb2 == "IMP" ~ "IMP novel",
+    carb2 == "KPC" ~ "KPC novel",
+    carb2 == "NDM" ~ "NDM novel",
+    carb2 == "OXA" ~ "OXA-48-like novel",
+    carb2 == "VIM" ~ "VIM novel",
+    TRUE ~ carb2)) |> 
+  select(source = carb1, target = carb2) 
+
+# add unique names to each carb column so we don't get insane loopy plots by default
+doubles$source <- paste0(doubles$source, "_q41")
+doubles$target <- paste0(doubles$target, "_q42")
+
+# filter out triples 
+triples <- meta |> 
+  filter(str_count(carb, ",") == 2) |> 
+  mutate(carb = str_remove_all(carb, "bla")) |> 
+  separate_wider_delim(carb, delim = ", ", names = c("carb1", "carb2", "carb3"), too_few = "align_start") |> 
+  mutate(carb1 = case_when(
+    carb1 == "IMP" ~ "IMP novel",
+    carb1 == "KPC" ~ "KPC novel",
+    carb1 == "NDM" ~ "NDM novel",
+    carb1 == "OXA" ~ "OXA-48-like novel",
+    carb1 == "VIM" ~ "VIM novel",
+    TRUE ~ carb1)) |> 
+  mutate(carb2 = case_when(
+    carb2 == "IMP" ~ "IMP novel",
+    carb2 == "KPC" ~ "KPC novel",
+    carb2 == "NDM" ~ "NDM novel",
+    carb2 == "OXA" ~ "OXA-48-like novel",
+    carb2 == "VIM" ~ "VIM novel",
+    TRUE ~ carb2)) |> 
+  mutate(carb3 = case_when(
+    carb3 == "IMP" ~ "IMP novel",
+    carb3 == "KPC" ~ "KPC novel",
+    carb3 == "NDM" ~ "NDM novel",
+    carb3 == "OXA" ~ "OXA-48-like novel",
+    carb3 == "VIM" ~ "VIM novel",
+    TRUE ~ carb3)) |> 
+  select(carb1, carb2, carb3)
+
+# add unique names to each carb column so we don't get insane loopy plots by default
+triples$carb1 <- paste0(triples$carb1, "_q41")
+triples$carb2 <- paste0(triples$carb2, "_q42")
+triples$carb3 <- paste0(triples$carb3, "_q43")
+
+# make a new df that splits out carb2 and carb3 
+temp <- triples |> 
+  select(carb1 = carb2, carb2 = carb3)
+
+# select carb1 and carb2 from original df, and bind to the carb2 and carb3 temp df. this capture first and second pair of every triple into two columns 
+triples_condensed <- triples |> 
+  select(carb1, carb2) |> 
+  rbind(temp) |> 
+  select(source = carb1, target = carb2) 
+
+# combine the triples dataset with the doubles from above and count pairs 
+all_condensed <- rbind(doubles, triples_condensed) |> 
+  count(source, target, name = "value") |> 
+  arrange(source, target)
+
+# assign node numbers/row numbers and add group value for color
+nodes <- data.frame(name = c(as.character(all_condensed$source), as.character(all_condensed$target)) |> unique()) |> 
+  mutate(group = case_when(
+    str_detect(name, "IMP") ~ "IMP",
+    str_detect(name, "KPC") ~ "KPC",
+    str_detect(name, "NDM") ~ "NDM",
+    str_detect(name, "OXA") ~ "OXA",
+    str_detect(name, "VIM") ~ "VIM",
+    TRUE ~ NA)) 
+
+# assign row number from nodes 
+all_condensed$IDsource <- match(all_condensed$source, nodes$name)-1 
+all_condensed$IDtarget <- match(all_condensed$target, nodes$name)-1
+
+# remove gross suffix from plot
+nodes$name <- sub('_q4[1-3]$', '', nodes$name)
+
+# specify colors of bars
+my_color <- 'd3.scaleOrdinal() .domain(["IMP", "KPC", "NDM", "OXA", "VIM"]) .range(["#D55E00", "#56B4E9", "#E69F00", "#CC79A7",  "#0072B2"])'
+
+# plot
+sankeyNetwork(Links = all_condensed, Nodes = nodes,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name",
+              colourScale = my_color, NodeGroup="group", 
+              iterations = 0,
+              sinksRight=FALSE, fontSize = 12, nodeWidth = 30, fontFamily = "sans-serif")
+```
+
+### Supplementary Figure 4: Heatmap of carbapenemase allele combinations for genomes with two carbapenemase genes 
+
+```{r}
+#| label: fig-plot-s4
+#| fig-cap: Heatmap of carbapenemase allele combinations (n=140/241) for genomes with two carbapenemase genes (86.0 %, 1290/1501). 
+#| fig-height: 6
+#| warning: false
+
+combos <- meta |> 
+  filter(str_count(carb, ",") == 1) |> 
+  separate_wider_delim(carb, delim = ", ", names = c("carb1", "carb2")) |> 
+  select(accession, carb1, carb2) |> 
+  group_by(carb1, carb2) |> 
+  count() |> 
+  pivot_wider(id_cols = carb1, names_from = carb2, values_from = n) |> 
+  pivot_longer(cols = !carb1, names_to = "carb2", values_to = "value") |> 
+  ungroup() |> 
+  mutate(carb1 = str_remove(carb1, "bla")) |> 
+  mutate(carb2 = str_remove(carb2, "bla"))
+
+# All possible values across BOTH columns
+all_carbs <- sort(unique(c(combos$carb1, combos$carb2)))
+
+combos3 <- tibble(carb1 = all_carbs, carb2 = all_carbs) |> 
+  complete(carb1, carb2) |> 
+  left_join(combos, by = c("carb1", "carb2")) |> 
+  left_join((combos |> filter(carb1 != carb2)), by = c("carb1" = "carb2", "carb2" = "carb1")) |> 
+  mutate_all(~replace(., is.na(.), 0)) |> 
+  mutate(value = value.x + value.y) |> 
+  select(carb1, carb2, value) |> 
+  mutate(value = ifelse(value == 0, NA, value))  |> 
+  mutate(carb1 = case_when(
+    carb1 == "IMP" ~ "IMP novel",
+    carb1 == "KPC" ~ "KPC novel",
+    carb1 == "NDM" ~ "NDM novel",
+    carb1 == "OXA" ~ "OXA-48-like novel",
+    carb1 == "VIM" ~ "VIM novel",
+    TRUE ~ carb1)) |> 
+  mutate(carb2 = case_when(
+    carb2 == "IMP" ~ "IMP novel",
+    carb2 == "KPC" ~ "KPC novel",
+    carb2 == "NDM" ~ "NDM novel",
+    carb2 == "OXA" ~ "OXA-48-like novel",
+    carb2 == "VIM" ~ "VIM novel",
+    TRUE ~ carb2)) |> 
+  mutate(carb1 = factor(carb1, levels = c("IMP-1","IMP-4","IMP-8","IMP-13","IMP-22","IMP-23","IMP-26","IMP-38","IMP-69","IMP-94","IMP-96","IMP novel","KPC-2","KPC-3","KPC-4","KPC-5","KPC-6","KPC-8","KPC-12","KPC-14","KPC-18","KPC-20","KPC-25","KPC-31","KPC-33","KPC-35","KPC-44","KPC-53","KPC-66","KPC-121","KPC-125","KPC-126","KPC-144","KPC-157","KPC-160","KPC-189","KPC-264","KPC novel","NDM-1","NDM-3","NDM-4","NDM-5","NDM-6","NDM-7","NDM-13","NDM-24","NDM novel","OXA-48","OXA-162","OXA-163","OXA-181","OXA-204","OXA-232","OXA-244","OXA-484","OXA-1181","OXA-1207","OXA-48-like novel","VIM-1","VIM-2","VIM-4","VIM-75","VIM-86","VIM novel"))) |> 
+  mutate(carb2 = factor(carb2, levels = c("IMP-1","IMP-4","IMP-8","IMP-13","IMP-22","IMP-23","IMP-26","IMP-38","IMP-69","IMP-94","IMP-96","IMP novel","KPC-2","KPC-3","KPC-4","KPC-5","KPC-6","KPC-8","KPC-12","KPC-14","KPC-18","KPC-20","KPC-25","KPC-31","KPC-33","KPC-35","KPC-44","KPC-53","KPC-66","KPC-121","KPC-125","KPC-126","KPC-144","KPC-157","KPC-160","KPC-189","KPC-264","KPC novel","NDM-1","NDM-3","NDM-4","NDM-5","NDM-6","NDM-7","NDM-13","NDM-24","NDM novel","OXA-48","OXA-162","OXA-163","OXA-181","OXA-204","OXA-232","OXA-244","OXA-484","OXA-1181","OXA-1207","OXA-48-like novel","VIM-1","VIM-2","VIM-4","VIM-75","VIM-86","VIM novel")))  
+
+heatmap <- combos3 |> 
+  ggplot(aes(x = carb1, y = carb2, fill = value)) +
+  geom_tile(color = "grey90") +
+  geom_text(aes(label = ifelse(value > 0, value, "")), color = "white", size = 2) +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, vjust =0.5, hjust = 0.9, size=6),
+    axis.text.y = element_text(size = 6)) +
+  scale_fill_gradient(na.value="white", high="#264040",low="cadetblue3") +
+  labs(fill = "Count", x = "Carbapenemase 1", y = "Carbapenemase 2");heatmap
+```
+
+### Supplementary Figure 5: Most common carbapenemase allelic combinations found across different genera
+
+```{r}
+#| label: fig-plot-s5
+#| fig-cap: Most common carbapenemase allelic combinations found across different genera. 
+#| fig-height: 5
+#| warning: false
+
+meta_carb <- meta  |> 
+  #filter(dereplicate == "unique") |> 
+  mutate(carb = ifelse(carb %in% (meta |> count(carb) |> filter(n > 9) |> pull(carb)), carb, "other")) |> 
+  #mutate(carb = ifelse(carb %in% (meta |> filter(dereplicate == "unique") |> count(carb) |> filter(n > 9) |> pull(carb)), carb, "other")) |> 
+  count(carb, genus)  |> 
+  ungroup() |> 
+  arrange(desc(n))  
+
+genus <- meta_carb |> 
+  mutate(carb = str_remove_all(carb, "bla")) |> 
+  ggplot(aes(x=n, y = reorder(carb, n, FUN="sum"), fill = genus)) +
+  geom_bar(stat="identity") +
+  geom_text(data = (meta_carb |> mutate(carb = str_remove_all(carb, "bla")) |> group_by(carb)  |> summarize(n_genus = n_distinct(genus), n = sum(n), genus = "Klebsiella")), aes(y = carb, x = n, label = n_genus), hjust = -0.1, show.legend = FALSE, size = 3) +
+  theme_bw() +
+  labs(x = "Number of genomes", y = "Carbapenemase combinations\n(present in 10 or more genomes)", fill = "Genus") +
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm")) +
+  scale_x_continuous(limits = c(0, 460)) +
+  scale_fill_manual(values = c("#A6CEE3", "#1F78B4", "#B2DF8A", "#33A02C", "#FB9A99", "#E31A1C", "#FDBF6F", "#FF7F00", "#CAB2D6", "#6A3D9A", "#FFFF99", "#B15928"));genus
+```
+
+### Supplementary Figure 6: Genomes with three or more carbapenemases
+
+```{r}
+#| label: fig-plot-s6
+#| fig-cap: Genomes with three or more carbapenemases. 
+#| fig-height: 7
+#| warning: false
+
+tri_carb <- meta |> 
+  filter(carb_count > 2)  |>  
+  mutate(allele_description = case_when(
+    multicarb_type == "same alleles" ~ "same alleles",
+    carb == "blaKPC-2, blaKPC-2, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaOXA-181, blaOXA-181" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC, blaKPC-2, blaKPC-2" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaNDM-5, blaOXA-181" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC, blaKPC-3, blaKPC-3" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaKPC-2, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaKPC-3, blaKPC-3" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM-1, blaOXA-48" ~ "distinct alleles",
+    carb == "blaNDM-1, blaNDM-5, blaOXA-232" ~ "distinct alleles",
+    carb == "blaKPC, blaKPC-2, blaKPC-2, blaKPC-25" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaKPC-2, blaKPC-2, blaKPC-2, blaKPC-2, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaKPC-2, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM-1, blaNDM-5" ~ "distinct alleles",
+    carb == "blaKPC-2, blaNDM-1, blaVIM-24" ~ "distinct alleles",
+    carb == "blaNDM, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaOXA-232, blaOXA-232" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaNDM-5, blaOXA-181, blaOXA-181" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaNDM-5, blaOXA-48" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaOXA-232, blaOXA-232" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaIMP-11, blaKPC-2, blaNDM-5" ~ "distinct alleles",
+    carb == "blaIMP-4, blaKPC-2, blaKPC-2" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaIMP-4, blaKPC-2, blaNDM-1, blaNDM-4" ~ "distinct alleles",
+    carb == "blaIMP-4, blaKPC-2, blaNDM-5" ~ "distinct alleles",
+    carb == "blaIMP-4, blaKPC-3, blaNDM-1" ~ "distinct alleles",
+    carb == "blaIMP-4, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaIMP-8, blaKPC-2, blaNDM-1" ~ "distinct alleles",
+    carb == "blaKPC, blaKPC, blaKPC-3" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC, blaKPC, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC, blaKPC, blaVIM-4, blaVIM-4" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC, blaKPC-2, blaNDM-1" ~ "distinct alleles",
+    carb == "blaKPC, blaKPC-2, blaVIM-1" ~ "distinct alleles",
+    carb == "blaKPC, blaKPC-3, blaKPC-3, blaKPC-3" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaKPC-2, blaKPC-2, blaKPC-2, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM, blaNDM" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM, blaNDM, blaNDM" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaNDM-5, blaNDM-5, blaNDM-5, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-2, blaOXA-181, blaVIM-1" ~ "distinct alleles",
+    carb == "blaKPC-2, blaVIM, blaVIM-1" ~ "distinct alleles",
+    carb == "blaKPC-3, blaNDM-5, blaNDM-5, blaNDM-5, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaKPC-3, blaNDM-7, blaNDM-7" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM, blaNDM-1, blaNDM-1" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM, blaNDM-5, blaNDM-5, blaNDM-5, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM-5, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaNDM-5, blaNDM-5, blaNDM-5" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM, blaOXA-232, blaOXA-232, blaOXA-232" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaNDM-1, blaNDM-7" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaNDM-1, blaOXA-181" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaNDM-1, blaOXA-48" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaNDM-4, blaOXA-181" ~ "distinct alleles",
+    carb == "blaNDM-1, blaNDM-4, blaOXA-232" ~ "distinct alleles",
+    carb == "blaNDM-1, blaNDM-5, blaOXA-181" ~ "distinct alleles",
+    carb == "blaNDM-1, blaNDM-5, blaOXA-232, blaOXA-232" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaOXA, blaOXA-181" ~ "distinct alleles",
+    carb == "blaNDM-1, blaOXA-232, blaOXA-48" ~ "distinct alleles",
+    carb == "blaNDM-1, blaOXA-48, blaOXA-48" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-1, blaOXA-48, blaVIM-1" ~ "distinct alleles",
+    carb == "blaNDM-5, blaNDM-5, blaNDM-5, blaOXA-181" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaNDM-5, blaOXA, blaOXA-232" ~ "distinct alleles",
+    carb == "blaNDM-5, blaOXA-181, blaOXA-48" ~ "distinct alleles",
+    carb == "blaOXA, blaOXA, blaOXA-232, blaOXA-232" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaOXA-48, blaOXA-48, blaVIM-63, blaVIM-63, blaVIM-63, blaVIM-63, blaVIM-63" ~ "at least one duplicated\nallele plus other gene(s)",
+    carb == "blaVIM-1, blaVIM-2, blaVIM-2, blaVIM-2" ~ "at least one duplicated\nallele plus other gene(s)",
+    TRUE ~ NA
+  )) 
+
+tri_carb_loc <- tri_carb |> 
+  mutate(allele_description = factor(allele_description, levels = c("same alleles", "at least one duplicated\nallele plus other gene(s)", "distinct alleles"))) |> 
+  mutate(multicarb_location = factor(multicarb_location, levels = c("one plas", "two plas", "three or more plas", "one plas and chr", "two plas and chr", "three or more plas and chr", "chr"))) |> 
+  ggplot(aes(x = allele_description, fill = multicarb_location)) + 
+  geom_bar(stat = "count") +
+  theme_bw() + 
+  labs(y = "Number of genomes", x = "Allele types for genomes with\nthree or more carbapenemases", fill = "Multicarbapenemase\nlocation") +
+  scale_fill_manual(values = c("#ffc098", "#e9742a",   "#93532a", "#f4c5ff", "#da62f5","#793a87", "#4182f3"))
+
+tri_carb_counts <- tri_carb  |> 
+  mutate(carb = ifelse(carb %in% (tri_carb |> count(carb) |> filter(n > 2) |> pull(carb)), carb, "other")) |> 
+  count(carb, genus)  |> 
+  ungroup() |> 
+  arrange(desc(n))  
+
+tri_carb_gen <- tri_carb_counts |>
+  mutate(carb = str_remove_all(carb, "bla")) |> 
+  ggplot(aes(x=n, y = reorder(carb, n, FUN="sum"), fill = genus)) +
+  geom_bar(stat="identity") +
+  geom_text(data = (tri_carb_counts |> mutate(carb = str_remove_all(carb, "bla")) |> group_by(carb)  |> summarize(n_genus = n_distinct(genus), n = sum(n), genus = "Klebsiella")), aes(y = carb, x = n, label = n_genus), hjust = -0.4, show.legend = FALSE, size = 3) +
+  theme_bw() +
+  labs(x = "Number of genomes", y = "Carbapenemase combinations\n(present in 3 or more genomes)", fill = "Genus") +
+  scale_fill_manual(values = c("#A6CEE3", "#1F78B4", "#B2DF8A", "#33A02C", "#FB9A99", "#E31A1C", "#FDBF6F", "#FF7F00", "#CAB2D6", "#6A3D9A", "#FFFF99", "#B15928"))
+
+tri_carb_gen + free(tri_carb_loc, side = "l") + guide_area() + plot_layout(design = "AC\nBC", guides = "collect", heights = c(0.65, 0.45)) + plot_annotation(tag_level="A")
+```
+
+### Supplementary Figure 7: Proportion of AMR-encoding plasmids that encoded at least one resistance gene to different antibiotic gene classes
+
+```{r}
+#| label: fig-plot-s7
+#| fig-cap: Proportion of AMR-encoding plasmids that encoded at least one resistance gene to different antibiotic gene classes. 
+#| fig-height: 4
+#| warning: false
+
+multicarb_plas_list <- gene |> 
+  filter(location == "plasmid")  |> 
+  count(contig_id) |> 
+  filter(n > 1) |> 
+  pull(contig_id)
+
+singlecarb_plas_list <- gene |> 
+  filter(location == "plasmid")  |> 
+  count(contig_id) |> 
+  filter(n == 1) |> 
+  pull(contig_id)
+
+amr_nocarbs <- amr |> 
+  filter(!str_detect(gene, "blaNDM|blaKPC|blaOXA-48|blaOXA-181|blaOXA-232|blaOXA-244|blaOXA-204|blaOXA-1205|blaOXA-1207|blaVIM|blaIMP") & !str_detect(closest_reference, "OXA-48|OXA-181|OXA-232|OXA-244|OXA-204|OXA-1205|OXA-1207")) 
+
+multicarb_plas_amr1 <- gene |> 
+  filter(location == "plasmid") |> 
+  mutate(carb_count = ifelse(contig_id %in% multicarb_plas_list, "Two or more", ifelse(contig_id %in% singlecarb_plas_list, "One", "None"))) |> 
+  group_by(carb_count, contig_id) |> 
+  arrange(gene) |> 
+  summarize(carb = toString(gene, sep = ", ")) |> 
+  mutate(carb_group = case_when(
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "IMP, KPC, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "IMP, KPC, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "IMP, KPC, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "IMP, NDM, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "IMP, NDM, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "IMP, OXA, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "KPC, NDM, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "KPC, NDM, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "KPC, OXA, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "NDM, OXA, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") ~ "IMP, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") ~ "IMP, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "VIM") ~ "IMP, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") ~ "IMP, KPC",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "KPC, NDM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "KPC, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "KPC, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "NDM, OXA",
+    str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "NDM, VIM",
+    str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "OXA, VIM",
+    str_detect(carb, "NDM") ~ "NDM",
+    str_detect(carb, "OXA") ~ "OXA",
+    str_detect(carb, "KPC") ~ "KPC",
+    str_detect(carb, "IMP") ~ "IMP",
+    str_detect(carb, "VIM") ~ "VIM",
+    str_detect(carb, "IMI") ~ "IMI",
+    TRUE ~ NA
+  )) |> 
+  mutate(carb_group = ifelse(carb_group != "NDM, OXA" & carb_group != "KPC, NDM" & carb_group != "KPC" & carb_group != "NDM" & carb_group != "OXA" & carb_count == "Two or more", "other", carb_group)) 
+
+nocarb_plas_amr <- contigs |> 
+  filter(carb == "no" & location == "plasmid") |> 
+  select(carb_count = carb, contig_id) |> 
+  mutate(carb = NA, carb_group = "None", carb_count = "None")   
+
+multicarb_plas_amr2 <- rbind(multicarb_plas_amr1, nocarb_plas_amr) |> 
+  left_join((amr_nocarbs |> select(contig_id, accession, gene, subclass)), by = c("contig_id")) |> 
+  separate_longer_delim(subclass, delim = "/") |> 
+  filter(!(carb_count == "None" & is.na(gene))) |> 
+  select(!gene) |> 
+  distinct() |> 
+  pivot_wider(id_cols = c("contig_id", "carb_count", "carb", "carb_group", "accession"), names_from = subclass, values_from = subclass, values_fn = ~1, values_fill = 0) |> 
+  pivot_longer(cols = !c("contig_id", "carb_count",  "carb", "carb_group", "accession"), names_to = "antibiotic", values_to = "n") |> 
+  filter(antibiotic != "NA") 
+
+num_zero_carb_plas <- multicarb_plas_amr2 |> 
+  distinct(contig_id, carb_count)  |> 
+  count(carb_count) |> 
+  filter(carb_count == "None") |> 
+  pull(n)
+
+amr_heatmap <- multicarb_plas_amr2 |> 
+  group_by(carb_count, carb_group, antibiotic) |>
+  summarize(sum = sum(n)) |> 
+  left_join((multicarb_plas_amr1  |> count(carb_count, carb_group, name = "total_plas")), by = c("carb_group", "carb_count")) |> 
+  mutate(total_plas = ifelse(carb_count == "None", num_zero_carb_plas, total_plas)) |> 
+  mutate(prop = sum/total_plas) |> 
+  mutate(carb_group = str_replace(carb_group, "OXA", "OXA-48-like")) |> 
+  mutate(label = paste0(carb_group, "\n(n=", total_plas, ")" )) |> 
+  ggplot(aes(x = label, y = antibiotic)) +
+   geom_tile(aes(fill = prop)) +
+  geom_text(aes(label = round(prop, digits=2)), color="white", size=3) +
+   theme_bw() +
+   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 0.95)) +
+  facet_wrap(~ carb_count, scales = "free_x", space = "free_x") +
+  scale_fill_gradient(low="#264040",high="cadetblue3") +
+  labs(x = "Carbapenemase group", y = "Antibiotic class", fill = "Proportion\nof plasmids\nencoding\nat least\none gene");amr_heatmap
+```
+
+### Supplementary Figure 8: Carbapenemase groups and genera represented in the top 8 carbapenemase plasmid secondary clusters
+
+```{r}
+#| label: fig-plot-s8
+#| fig-cap: Carbapenemase groups and genera represented in the top 8 carbapenemase plasmid secondary clusters. 
+#| fig-height: 6
+#| warning: false
+
+gene_carb_group <- gene |> 
+  filter(location == "plasmid") |> 
+  filter(str_detect(secondary_cluster, "AH615|AH539|AL194|AH594|AJ272|AH561|AI283|AI436")) |> 
+  group_by(contig_id, organism, primary_cluster, secondary_cluster) |> 
+  arrange(gene) |> 
+  summarize(carb = toString(gene, sep =", ")) |> 
+  ungroup() |> 
+  mutate(carb_group = case_when(
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "IMP, KPC, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "IMP, KPC, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "IMP, KPC, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "IMP, NDM, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "IMP, NDM, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "IMP, OXA, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "KPC, NDM, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "KPC, NDM, VIM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "KPC, OXA, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "NDM, OXA, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "OXA") ~ "IMP, OXA",
+    str_detect(carb, "IMP") & str_detect(carb, "NDM") ~ "IMP, NDM",
+    str_detect(carb, "IMP") & str_detect(carb, "VIM") ~ "IMP, VIM",
+    str_detect(carb, "IMP") & str_detect(carb, "KPC") ~ "IMP, KPC",
+    str_detect(carb, "KPC") & str_detect(carb, "NDM") ~ "KPC, NDM",
+    str_detect(carb, "KPC") & str_detect(carb, "OXA") ~ "KPC, OXA",
+    str_detect(carb, "KPC") & str_detect(carb, "VIM") ~ "KPC, VIM",
+    str_detect(carb, "NDM") & str_detect(carb, "OXA") ~ "NDM, OXA",
+    str_detect(carb, "NDM") & str_detect(carb, "VIM") ~ "NDM, VIM",
+    str_detect(carb, "OXA") & str_detect(carb, "VIM") ~ "OXA, VIM",
+    str_detect(carb, "NDM") ~ "NDM",
+    str_detect(carb, "OXA") ~ "OXA",
+    str_detect(carb, "KPC") ~ "KPC",
+    str_detect(carb, "IMP") ~ "IMP",
+    str_detect(carb, "VIM") ~ "VIM",
+    str_detect(carb, "IMI") ~ "IMI",
+    TRUE ~ NA
+  ))
+  
+cluster_a <- gene_carb_group |> 
+  mutate(carb_group_plotting = carb_group ) |> 
+  mutate(carb_group_plotting = factor(carb_group_plotting, levels = c("IMP", "IMP, KPC", "IMP, VIM", "KPC", "KPC, NDM", "KPC, VIM", "NDM", "NDM, OXA", "OXA", "VIM"))) |>     
+  group_by(primary_cluster, secondary_cluster, carb_group_plotting)  |> 
+  count() |> 
+  mutate(cluster = paste0(primary_cluster, "/\n", secondary_cluster)) |> 
+  mutate(carb_group_plotting = str_replace(carb_group_plotting, "OXA", "OXA-48-like")) |> 
+  ggplot(aes(x = cluster, y = n, fill = carb_group_plotting)) +
+  geom_bar_pattern(stat="identity", position = "stack", aes(pattern_fill = carb_group_plotting), pattern_colour = NA, pattern_density = 0.5, pattern_spacing = 0.02) + 
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 7, angle=90, vjust = 0.5)) +
+  scale_fill_manual(values = c("#D55E00", "#D55E00", "#56B4E9", "#56B4E9", "#56B4E9", "#E69F00", "#E69F00", "#CC79A7", "#0072B2")) +
+  scale_pattern_fill_manual(values = c("#56B4E9", "#0072B2", "#56B4E9", "#E69F00", "#0072B2", "#E69F00", "#CC79A7", "#CC79A7", "#0072B2")) +
+  labs(fill = "Carbapenemase\ngroup", y = "Number of\nplasmids", x = "Plasmid cluster", pattern_fill = "Carbapenemase\ngroup")
+
+cluster_b <- gene_carb_group |> 
+  mutate(genus = str_remove(organism, " .*")) |> 
+  group_by(primary_cluster, secondary_cluster, genus)  |> 
+  count() |> 
+  mutate(cluster = paste0(primary_cluster, "/\n", secondary_cluster)) |> 
+  ggplot(aes(x = cluster, y = n, fill = genus)) +
+  geom_bar(stat="identity", position="stack") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 7, angle=90, vjust = 0.5)) +
+  scale_fill_manual(values = c("#A6CEE3", "#1F78B4", "#B2DF8A", "#33A02C", "#FDBF6F", "#CAB2D6", "#6A3D9A")) +
+  labs(fill = "Genus", y = "Number of\nplasmids", x = "Plasmid cluster")
+  
+cluster_a + cluster_b + plot_layout(nrow = 2) + plot_annotation(tag_level ="A") & theme(legend.justification = "left")
+```
+
+### Supplementary Figure 9: Hypervirulent *K. pneumoniae*
+
+```{r}
+#| label: fig-plot-s9
+#| fig-cap: Hypervirulent *K. pneumoniae*. 
+#| fig-height: 7
+#| warning: false
+
+hvkp_meta <- hvkp |> 
+  ungroup() |> 
+  distinct(accession) |> 
+  left_join(meta |> select(accession, mlst, year, country, continent, isolation_source_group, carb, carb_group, carb_count, multicarb_location, multicarb_type)) 
+
+hvkp_combos <- hvkp_meta |> 
+  group_by(carb_group) |> 
+  count(carb) |> 
+  mutate(carb = ifelse(n == 1, "other", carb)) |> 
+  group_by(carb_group, carb) |> 
+  mutate(carb = str_remove_all(carb, "bla")) |> 
+  mutate(carb = case_when(
+    carb == "OXA, OXA" ~ "OXA novel, OXA novel", 
+    carb == "KPC, KPC-2" ~ "KPC novel, KPC-2", 
+    carb == "OXA, OXA-232" ~ "OXA novel, OXA-232", 
+    carb == "KPC, KPC-2, KPC-2, KPC-25" ~ "KPC novel, KPC-2, KPC-2, KPC-25", 
+    TRUE ~ carb)) |> 
+  summarize(nn = sum(n)) |> 
+  mutate(carb_group = str_replace(carb_group, "OXA", "OXA-48-like")) |> 
+  ggplot(aes(x=nn, y = reorder(carb,nn, FUN = "sum"), fill = carb_group)) +
+  geom_bar_pattern(stat="identity", position = "stack", aes(pattern_fill = carb_group), pattern_colour = NA, pattern_density = 0.5, pattern_spacing = 0.02) + 
+  theme_bw() +
+  scale_fill_manual(values = c("#D55E00", "#D55E00", "#56B4E9", "#56B4E9", "#56B4E9", "#56B4E9","#56B4E9","#E69F00", "#E69F00", "#CC79A7")) +
+  scale_pattern_fill_manual(values = c("#56B4E9", "#E69F00", "#56B4E9", "#E69F00", "grey30","#CC79A7","#0072B2", "#E69F00", "#CC79A7", "#CC79A7")) +
+  labs(fill = "Carbapenemase\ngroup", y = "Carbapenemase combinations\n(present in 2 or more genomes)", x = "Number of genomes", pattern_fill = "Carbapenemase\ngroup")
+
+hvkp_plas <- hvkp |> 
+  left_join(contigs |> select(contig_id, secondary_cluster, length, location), by = "contig_id") |> 
+  filter(location == "plasmid") |> 
+  mutate(carb = ifelse(contig_id %in% (gene |> distinct(contig_id) |> pull()), "yes", "no")) |> 
+  ungroup() 
+
+multicarb_location_hvkp <- gene |> 
+  filter(accession %in% (hvkp_meta |> pull(accession))) |> 
+  mutate(genomic_location = ifelse(location == "plasmid" & contig_id %in% (hvkp_plas |> distinct(contig_id) |> pull(contig_id)), "virplasmid", location)) |> 
+  mutate(contig_location = paste(contig_id, genomic_location, sep = "_")) |> 
+  group_by(accession, contig_location) |> 
+  summarize(gene= toString(gene, sep= ", ")) |> 
+  summarize(contig_location = toString(contig_location, sep = ", ")) |> 
+  mutate(multicarb_location = case_when(
+    str_detect(contig_location, "_plasmid, .*_plasmid.*_plasmid") & str_detect(contig_location, "chromosome") ~ "three or more non-vir plas and chr",
+    str_detect(contig_location, "_plasmid, .*_plasmid") & str_detect(contig_location, "chromosome") ~ "two non-vir plas and chr",
+    str_detect(contig_location, "_virplasmid, .*plasmid") & str_detect(contig_location, "chromosome") ~ "vir plas, non-vir plas, and chr",
+    str_detect(contig_location, "_plasmid") & str_detect(contig_location, "chromosome") ~ "non-vir plas and chr",
+    str_detect(contig_location, "_virplasmid") & str_detect(contig_location, "chromosome") ~ "vir plas and chr",
+    str_detect(contig_location, "_plasmid, .*_plasmid, .*_plasmid") ~ "three or more non-vir plas",
+    str_detect(contig_location, "_virplasmid, .*_plasmid, .*_plasmid") ~ "vir plas and two or more non-vir plas",
+    str_detect(contig_location, "_plasmid, .*_virplasmid, .*_plasmid") ~ "vir plas and two or more non-vir plas",
+    str_detect(contig_location, "_plasmid, .*_plasmid, .*_virplasmid") ~ "vir plas and two or more non-vir plas",
+    str_detect(contig_location, "_plasmid, .*_plasmid") ~ "two non-vir plas",
+    str_detect(contig_location, "_virplasmid") & str_detect(contig_location, "_plasmid") ~ "vir plas and non-vir plas",
+    str_detect(contig_location, "chromosome")  ~ "chr",
+    str_detect(contig_location, "_plasmid") ~ "non-vir plas",
+    str_detect(contig_location, "_virplasmid") ~ "vir plas",
+    TRUE ~ NA  
+  )) |> 
+  select(!contig_location)
+
+hvkp_location <- hvkp_meta |> 
+  left_join(multicarb_location_hvkp, by = "accession") |> 
+  mutate(multicarb_location.y = factor(multicarb_location.y, levels = c("non-vir plas", "vir plas",  "two non-vir plas", "vir plas and non-vir plas",  "three or more non-vir plas", "vir plas and two or more non-vir plas",  "non-vir plas and chr", "vir plas and chr",  "two non-vir plas and chr", "vir plas, non-vir plas, and chr", "three or more non-vir plas and chr", "chr"))) |> 
+  mutate(multicarb_type = ifelse(multicarb_type == "same alleles", "same\nalleles", ifelse(multicarb_type == "different alleles", "different\nalleles", "different\nfamilies"))) |> 
+  mutate(multicarb_type = factor(multicarb_type, levels = c("same\nalleles", "different\nalleles", "different\nfamilies"))) |> 
+  ggplot(aes(x = multicarb_type, fill = multicarb_location.y)) + 
+  geom_bar_pattern(stat="count", position = "stack", aes(pattern_fill = multicarb_location.y), pattern_colour = NA, pattern_density = 0.5, pattern_spacing = 0.02) + 
+  theme_bw() +
+  scale_fill_manual(values = c("#ffc098" , "#ffc098", "#e9742a", "#e9742a", "#93532a", "#93532a", "#f4c5ff" , "#f4c5ff", "#da62f5", "#da62f5", "#793a87", "#4182f3")) +
+  scale_pattern_fill_manual(values = c("#ffc098" , "grey30", "#e9742a", "grey30", "#93532a", "grey30", "#f4c5ff" , "grey30", "#da62f5", "grey30", "#793a87", "#4182f3")) +
+  labs(y = "Number of genomes", x = "Multi-carbapenemase type", fill = "Multi-carbapenemase\nlocation", pattern_fill = "Multi-carbapenemase\nlocation")
+
+hvkp_combos + free(hvkp_location, side="l") + plot_layout(design = "A\nB", heights =c(0.65, 0.4)) + plot_annotation(tag_levels = "A") & theme(legend.justification = "left")
+```
+
+### Supplementary Figure 10: Carbapenemases with non-exact allele matches 
+
+```{r}
+#| label: fig-plot-s10
+#| fig-cap: Carbapenemases with non-exact allele matches. 
+#| fig-height: 4
+#| warning: false
+
+mismatches2 <- amr |> 
+  filter(accession %in% (meta |> pull(accession))) |> 
+  filter(str_detect(gene, "blaNDM|blaKPC|blaOXA-48|blaOXA-181|blaOXA-232|blaOXA-244|blaOXA-204|blaOXA-1205|blaOXA-1207|blaVIM|blaIMP") | str_detect(closest_reference, "OXA-48|OXA-181|OXA-232|OXA-244|OXA-204|OXA-1205|OXA-1207")) |> 
+  filter(status != "ALLELEX" & status != "PARTIAL_CONTIG_ENDX") |> 
+  left_join(meta_raw |> select(accession, multicarb_type, multicarb_location, carb), by = "accession") |> 
+  filter(!is.na(multicarb_type)) |> 
+  mutate(multicarb_type = ifelse(multicarb_type == "different types", "different families", "same family")) |> 
+  group_by(gene, status) |> 
+  count(multicarb_type)
+
+mismatches_plt <- mismatches2 |> 
+  mutate(multicarb_type = factor(multicarb_type, levels = c("same family", "different families"))) |> 
+  mutate(status = case_when(
+    status == "BLASTX" ~ "different protein",
+    status == "PARTIALX" ~ "pseudogene/frameshift",
+    status == "INTERNAL_STOP" ~ "internal stop",
+    #status == "PARTIAL_CONTIG_ENDX" ~ "split on contig end",
+    TRUE ~ NA)) |> 
+  ggplot(aes(x = multicarb_type, fill = status, y = n)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+  scale_fill_manual(values = c("cadetblue2", "cadetblue3", "cadetblue4")) +
+  labs(x = "Carbapenemases in genome", y = "Mutant carbapenemase\n(non-exact allele matches)\ncount", fill = "Gene status") +
+  theme(axis.text.x = element_text(angle=90)) +
+  facet_wrap(~ factor(gene, labels = c("IMP\n(n=1)", "KPC\n(n=75)", "NDM\n(n=46)", "OXA-48-\nlike\n(n=22)", "VIM\n(n=3)")), nrow=1);mismatches_plt
+```
+
+### Supplementary Figure 11: Proportion of genomes with different multi-carbapenemase groups over time
+
+```{r}
+#| label: fig-plot-s11
+#| fig-cap: Proportion of genomes with different multi-carbapenemase groups over time.. 
+#| fig-height: 4
+#| warning: false
+
+year <- meta |> 
+  mutate(carb_group_plotting = case_when(
+    str_count(carb_group, ",") > 1 ~ "other",
+    carb_group == "NDM, VIM" ~ "other",
+    carb_group == "IMP, OXA" ~ "other",
+    carb_group == "IMP, VIM" ~ "other",
+    TRUE ~ carb_group )) |> 
+  mutate(carb_group_plotting = factor(carb_group_plotting, levels = c("IMP", "IMP, KPC", "IMP, NDM", "KPC", "KPC, NDM", "KPC, OXA", "KPC, VIM", "NDM", "NDM, OXA", "OXA", "OXA, VIM", "VIM", "other"))) |>  
+  group_by(year) |> 
+  count(carb_group_plotting) |> 
+  left_join(meta |> count(year, name = "year_total"), by = "year") |> 
+  mutate(carb_group_plotting = str_replace(carb_group_plotting, "OXA", "OXA-48-like")) |> 
+  mutate(prop = n/year_total) |> 
+  ggplot(aes(x = year, y = prop, fill = carb_group_plotting)) +
+  geom_bar_pattern(stat="identity", position = "stack", aes(pattern_fill = carb_group_plotting), pattern_colour = NA, pattern_density = 0.5, pattern_spacing = 0.02) + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(x = "Year", fill = "Carbapenemase\ngroup", y = "Proportion", pattern_fill = "Carbapenemase\ngroup") +
+  scale_fill_manual(values = c("#D55E00", "#D55E00", "#D55E00", "#56B4E9", "#56B4E9", "#56B4E9", "#56B4E9", "#E69F00", "#E69F00", "#CC79A7", "#CC79A7", "#0072B2", "grey")) +
+  scale_pattern_fill_manual(values = c("#D55E00", "#56B4E9", "#E69F00", "#56B4E9", "#E69F00","#CC79A7", "#0072B2", "#E69F00", "#CC79A7", "#CC79A7", "#0072B2","#0072B2", "grey"));year
+```
+
+### Supplementary Figure 12: Multi-carbapenemase Enterobacterales genomes from NCBI GenBank with fewer than 40 contigs ordered by number of contigs (n=2033)
+
+```{r}
+#| label: fig-plot-s12
+#| fig-cap: Multi-carbapenemase Enterobacterales genomes from NCBI GenBank with fewer than 40 contigs ordered by number of contigs (n=2033). 
+#| fig-height: 4
+#| warning: false
+
+ncbi_multicarb_accessions <- carbs_ncbi |> 
+  count(accession)  |> 
+  filter(n > 1) |> 
+  pull(accession)
+
+meta_below40 <- meta_ncbi |> 
+  filter(accession %in% ncbi_multicarb_accessions) |> 
+  mutate(long_read_platform = ifelse(str_detect(platform, "Oxford|Nanopore|nanopore|OXFORD|pacbio|PacBio|Pacbio|PacBIO|Pacific Bio|GridION|MinION|minION|Hybrid|ONT") & !is.na(platform), "yes", "no")) 
+
+p1 <- meta_below40 |> 
+  ggplot(aes(y = assembly_num_contigs, x = reorder(accession, assembly_num_contigs))) +
+  geom_point() +
+  theme_bw() +
+  theme(panel.grid.major.x = element_blank()) +
+  geom_hline(yintercept = 20) +
+  labs(x = "Genomes", y = "Number of contigs") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p2 <- meta_below40 |> 
+  ggplot(aes(x = assembly_num_contigs, fill = long_read_platform)) +
+  geom_vline(xintercept = 20) +
+  geom_bar(stat = "count") +
+  labs(x = "Number of contigs", y = "Number of genomes", fill = "Sequenced with\nlong read platform?") +
+  scale_fill_manual(values = c("grey70","grey30")) +
+  theme_bw()
+
+p1 + p2 + plot_annotation(tag_levels = 'A')
+```
+
+# Statistical analyses
+
+### Pearson's Chi-squared: carbapenemase combinations vs genus
+
+```{r}
+#| label: stats-person-genus
+#| warning: false
+
+meta_carb <- meta  |> 
+  #filter(dereplicate == "unique") |> 
+  mutate(carb = ifelse(carb %in% (meta |> filter(dereplicate == "unique") |> count(carb) |> filter(n > 9) |> pull(carb)), carb, "other")) |> 
+  count(carb, genus)  |> 
+  ungroup() |> 
+  arrange(desc(n))  
+
+meta_carb2 <- meta_carb |> 
+  mutate(genus = factor(genus)) |> 
+  pivot_wider(id_cols = genus, names_from = carb, values_from = n, values_fill = 0) |> 
+  column_to_rownames("genus")
+sim_test <- chisq.test(meta_carb2, simulate.p.value=TRUE, B=20000);sim_test
+residuals_table <- sim_test$stdres
+raw_p_values <- 2 * (1 - pnorm(abs(residuals_table)))
+
+# Apply Benjamini-Hochberg (BH/FDR) adjustment across all 300 cells
+adjusted_p_values <- p.adjust(raw_p_values, method = "BH")
+
+# Re-shape the adjusted p-values back into the original 12x25 matrix structure
+adj_p_matrix <- matrix(adjusted_p_values, nrow = 12, ncol = 25, 
+                       dimnames = list(rownames(meta_carb2), colnames(meta_carb2)))
+
+# Find cells where the BH-adjusted p-value is less than 0.05
+significant_indices <- which(adj_p_matrix < 0.05, arr.ind = TRUE)
+
+# Display the significant drivers
+if(nrow(significant_indices) > 0) {
+  results_summary <- data.frame(
+    Row = rownames(adj_p_matrix)[significant_indices[, 1]],
+    Column = colnames(adj_p_matrix)[significant_indices[, 2]],
+    Residual = residuals_table[significant_indices],
+    BH_Adj_P = adj_p_matrix[significant_indices]
+  )
+  print("--- SIGNIFICANT DRIVING CELLS FOUND (BH ADJ) ---")
+  print(results_summary[order(results_summary$BH_Adj_P), ]) # Ordered by significance
+} else {
+  print("No cells were significant after Benjamini-Hochberg adjustment.")
+}
+```
+
+### Fisher's exact test: genomic location
+
+```{r}
+#| label: stats-fishers-genomic-location
+#| warning: false
+
+test <- meta |> 
+  count(multicarb_type, multicarb_location) |> 
+  pivot_wider(id_cols = multicarb_type, names_from = multicarb_location, values_from = n, values_fill = 0) |> 
+  column_to_rownames("multicarb_type")
+ 
+fisher.test(test, simulate.p.value = TRUE, B=20000)
+chisq.test(test, simulate.p.value = TRUE, B=20000)$stdres
+```
+
+### Firth's penalised binary logistic regression: consolidation of carbapenemases onto a single plasmid backbone
+
+```{r}
+#| label: stats-firth-consolidation-oneplas
+#| warning: false
+
+location_stats <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(!is.na(year)) |> 
+  mutate(year = as.numeric(year)) |> 
+  mutate(multicarb_location = droplevels(as.factor(multicarb_location))) |> 
+  mutate(multicarb_location = relevel(multicarb_location, ref = "two plas"))
+
+# Create the binary outcome variable 
+location_stats$target_binary <- ifelse(
+  location_stats$multicarb_location == "one plas", 1, 0
+)
+
+# Center the year variable (starts at 1 instead of calendar year) - this brings the intercept down from the billions to a normal scale
+location_stats$year_centered <- location_stats$year - min(location_stats$year) + 1
+
+# Run Firth's Penalized Binary Logistic Regression
+binary_firth_model <- logistf(
+  target_binary ~ year_centered, 
+  data = location_stats
+)
+
+summary(binary_firth_model)
+
+# Extract the raw log-odds coefficients and profile confidence intervals
+log_odds_coef <- coef(binary_firth_model)
+log_odds_ci   <- confint(binary_firth_model)
+
+# Convert them to the odds ratio scale 
+odds_ratios <- exp(log_odds_coef)
+ci_exponentiated <- exp(log_odds_ci)
+
+# print results
+results_table <- cbind(OR = odds_ratios, 
+                       Lower_95_CI = ci_exponentiated[,1], 
+                       Upper_95_CI = ci_exponentiated[,2])
+
+print(results_table["year_centered", , drop = FALSE])
+```
+
+### Permutation test: pairwise carbapenemase co-occurence
+
+```{r}
+#| label: stats-permutation-cooccurence
+#| warning: false
+
+transactions <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(accession != "GCA_023982975.1") |> # has multiple VIM-63 copies that are skewing results, only isolate with this gene
+  mutate(transaction_id = 1:n()) |>
+  separate_longer_delim(carb, delim = ", ") |> 
+  select(transaction_id, item=carb)
+
+df <- transactions |> 
+  mutate(transaction_id = as.factor(transaction_id), item = as.factor(item))
+
+transactions <- levels(df$transaction_id)
+items <- levels(df$item)
+
+n_transactions <- length(transactions)
+n_items <- length(items)
+
+# Integer indices
+transaction_idx <- as.integer(df$transaction_id)
+item_idx <- as.integer(df$item)
+
+# spare transaction x item matrix
+X <- Matrix::sparseMatrix(
+  i = transaction_idx,
+  j = item_idx,
+  x = 1,
+  dims = c(n_transactions, n_items),
+  dimnames = list(transactions, items)
+)
+
+# function to calculate pair counts
+get_pairs_matrix <- function(X) {
+
+  # Cross-products
+  cp <- as.matrix(crossprod(X))
+
+  # Self-pairs: choose(count, 2)
+  self_counts <- colSums(X * (X - 1) / 2)
+
+  # Replace diagonal of crossprod with correct self-pair counts
+  diag(cp) <- self_counts
+
+  cp
+}
+
+# calculate observed pair count matrix 
+observed <- get_pairs_matrix(X)
+
+# permutation function 
+permute_once <- function() {
+
+  permuted_items <- sample(item_idx)
+
+  Xperm <- Matrix::sparseMatrix(
+    i = transaction_idx,
+    j = permuted_items,
+    x = 1,
+    dims = c(n_transactions, n_items)
+  )
+
+  get_pairs_matrix(Xperm)
+}
+
+# assign null quantities 
+set.seed(123)
+B <- 10000
+sum_null <- matrix(
+  0,
+  nrow = n_items,
+  ncol = n_items
+)
+sumsq_null <- matrix(
+  0,
+  nrow = n_items,
+  ncol = n_items
+)
+n_ge <- matrix(
+  0L,
+  nrow = n_items,
+  ncol = n_items
+)
+
+for (b in seq_len(B)) {
+
+  perm <- permute_once()
+
+  # Null expectation
+  sum_null <- sum_null + perm
+
+  # For null SD
+  sumsq_null <- sumsq_null + perm^2
+
+  # Number of permutations >= observed
+  n_ge <- n_ge + (perm >= observed)
+
+  if (b %% 1000 == 0) {
+    message("Permutation ", b, " / ", B)
+  }
+}
+
+# compute null statistic
+expected <- sum_null / B
+
+null_variance <- (
+  sumsq_null -
+    (sum_null^2 / B)
+) / (B - 1)
+
+null_sd <- sqrt(
+  pmax(null_variance, 0)
+)
+
+p_value <- (n_ge + 1) / (B + 1)
+
+# keep only upper triangle 
+idx <- which(
+  upper.tri(observed, diag = TRUE),
+  arr.ind = TRUE
+)
+
+results <- data.frame(
+  item_1 = items[idx[, 1]],
+  item_2 = items[idx[, 2]],
+  observed = observed[idx],
+  expected = expected[idx],
+  null_sd = null_sd[idx],
+  p_value = p_value[idx]
+)
+
+# add enrichment and multiple-testing correction
+results <- results %>%
+  mutate(
+    enrichment = ifelse(
+      expected > 0,
+      observed / expected,
+      NA_real_),
+
+    log2_enrichment =
+      log2(
+        (observed + 0.5) /
+        (expected + 0.5)),
+
+    q_value = p.adjust(
+      p_value,
+      method = "BH")
+  ) |> 
+  arrange(
+    q_value,
+    desc(enrichment)
+  )
+
+# filtering for pairs that appear in more than 5 genomes
+significant_pairs <- results |> 
+  filter(q_value < 0.05, enrichment > 1, observed >= 5)
+
+results |> 
+  filter(observed > 5) |> 
+  select(carb1 = item_1, carb2 = item_2, observed, expected, enrichment, log2_enrichment, p_value, q_value) |> 
+  arrange(q_value, desc(enrichment))
+```
+
+### Kruskal-Wallis with post-hoc Dunn's and BH correction: AMR genes, AMR gene classes, replicons, length, and toxin-antitoxin systems on plasmids with zero, one, or two or more carbapenemases
+
+```{r}
+#| label: stats-kruskal-amr
+#| warning: false
+
+multicarb_plas_list <- gene |> 
+  filter(location == "plasmid")  |> 
+  count(contig_id) |> 
+  filter(n > 1) |> 
+  pull(contig_id)
+
+singlecarb_plas_list <- gene |> 
+  filter(location == "plasmid")  |> 
+  count(contig_id) |> 
+  filter(n == 1) |> 
+  pull(contig_id)
+
+amr_nocarbs <- amr |> 
+  filter(!str_detect(gene, "blaNDM|blaKPC|blaOXA-48|blaOXA-181|blaOXA-232|blaOXA-244|blaOXA-204|blaOXA-1205|blaOXA-1207|blaVIM|blaIMP") & !str_detect(closest_reference, "OXA-48|OXA-181|OXA-232|OXA-244|OXA-204|OXA-1205|OXA-1207")) 
+
+amr_per_plas <- contigs |> 
+  filter(location == "plasmid") |> 
+  mutate(num_replicons = case_when(
+    rep_type == "-" ~ 0,
+    str_detect(rep_type, ",") ~ str_count(rep_type, ",") +1,
+    TRUE ~ 1)) |> 
+  select(accession, contig_id, length, num_replicons) |> 
+  mutate(num_carb_on_plas = case_when(
+    contig_id %in% multicarb_plas_list ~ "Two or\nmore",
+    contig_id %in% singlecarb_plas_list ~ "One",
+    TRUE ~ "None"
+  )) |> 
+  select(accession, contig_id, length, num_carb_on_plas, num_replicons) |> 
+  distinct() |> 
+  left_join(amr_nocarbs, by=c("contig_id", "accession")) |> # excludes carb genes
+  group_by(num_carb_on_plas, contig_id, length.x, num_replicons) |> 
+  summarize(genes_concat = toString(gene, sep = ", ")) |> 
+  mutate(num_genes = case_when(
+    genes_concat == "NA" ~ 0,
+    str_detect(genes_concat, ",") ~ str_count(genes_concat, ",") +1,
+    TRUE ~ 1)) |> 
+  left_join(amr_nocarbs, by=c("contig_id")) |> # excludes carb class
+  group_by(num_carb_on_plas, contig_id, length.x, num_replicons, num_genes) |>
+  separate_longer_delim(subclass, delim = "/") |>
+  summarize(num_classes = n_distinct(subclass)) |> 
+  mutate(num_classes = ifelse(num_genes == 0, 0, num_classes)) |> 
+  mutate(num_carb_on_plas = factor(num_carb_on_plas)) |> 
+  ungroup()
+
+ta2 <- ta |> 
+  group_by(contig_id) |> 
+  summarize(num_TA = n_distinct(id))
+
+amr_per_plas2 <- amr_per_plas |> 
+  left_join(ta2, by = "contig_id") |> 
+  mutate(num_TA = ifelse(is.na(num_TA), 0, num_TA))  |> 
+  filter(num_genes > 0 | num_carb_on_plas == "One" | num_carb_on_plas == "Two or\nmore") # keeping only those with AMR genes
+
+kruskal.test(num_genes ~ num_carb_on_plas, data = amr_per_plas2)
+rstatix::dunn_test(num_genes ~ num_carb_on_plas, data = amr_per_plas2, p.adjust.method = "BH")
+
+kruskal.test(num_classes ~ num_carb_on_plas, data = amr_per_plas2)
+rstatix::dunn_test(num_classes ~ num_carb_on_plas, data = amr_per_plas2, p.adjust.method = "BH")
+
+kruskal.test(num_replicons ~ num_carb_on_plas, data = amr_per_plas2)
+rstatix::dunn_test(num_replicons ~ num_carb_on_plas, data = amr_per_plas2, p.adjust.method = "BH")
+
+kruskal.test(length.x ~ num_carb_on_plas, data = amr_per_plas2)
+rstatix::dunn_test(length.x ~ num_carb_on_plas, data = amr_per_plas2, p.adjust.method = "BH")
+
+kruskal.test(num_TA ~ num_carb_on_plas, data = amr_per_plas2)
+rstatix::dunn_test(num_TA ~ num_carb_on_plas, data = amr_per_plas2, p.adjust.method = "BH")
+```
+
+### Pearson's Chi-squared: genomic location in hypervirulent *K. pneumoniae*
+
+```{r}
+#| label: stats-pearson-hvkp
+#| warning: false
+
+hvkp_stats <- hvkp_meta |> 
+  left_join(multicarb_location_hvkp, by = "accession") |> 
+  select(accession, multicarb_location.y, multicarb_type) |> 
+  mutate(new_location = ifelse(str_detect(multicarb_location.y, "^vir plas"), "vir plas", "other")) |> 
+  count(multicarb_type, new_location) |>
+  pivot_wider(id_cols = "multicarb_type", names_from = "new_location", values_from = "n", values_fill = 0) |> 
+  column_to_rownames("multicarb_type") |> 
+  select(`vir plas`, other)
+chisq.test(hvkp_stats)
+chisq.test(hvkp_stats)$stdres
+
+results <- lapply(seq_len(nrow(hvkp_stats)), function(i) {
+
+  # 2 x 2 table: focal category vs all other categories
+  focal <- hvkp_stats[i, ]
+  others <- colSums(hvkp_stats[-i, , drop = FALSE])
+
+  test_tab <- rbind(
+    category = focal,
+    other_categories = others
+  )
+
+  ft <- fisher.test(test_tab)
+
+  data.frame(
+    category = rownames(hvkp_stats)[i],
+    odds_ratio = unname(ft$estimate),
+        CI_lower = ft$conf.int[1],
+    CI_upper = ft$conf.int[2],
+    p_value = ft$p.value
+  )
+})
+
+results <- do.call(rbind, results)
+
+# Benjamini-Hochberg FDR correction
+results$p_adj_BH <- p.adjust(
+  results$p_value,
+  method = "BH"
+)
+results$prop_other <- hvkp_stats[, "other"] / sum(hvkp_stats[, "other"])
+results$prop_virulence <- hvkp_stats[, "vir plas"] / sum(hvkp_stats[, "vir plas"])
+results
+```
+
+### Anderson-Darling test for normality/uniform distribution: distance of carbapenemase genes on the same plasmid backbone
+
+```{r}
+#| label: stats-anderson-darling
+#| warning: false
+
+test <- tn4 |> filter(carb_group == "KPC") |> pull(prop)
+goftest::ad.test(test, null = "punif", min = 0, max = 0.500001)
+
+test <- tn4 |> filter(carb_group == "NDM") |> pull(prop)
+goftest::ad.test(test, null = "punif", min = 0, max = 0.500001)
+
+test <- tn4 |> filter(carb_group == "OXA") |> pull(prop)
+goftest::ad.test(test, null = "punif", min = 0, max = 0.500001)
+
+test <- tn4 |> filter(carb_group == "KPC, NDM") |> pull(prop)
+goftest::ad.test(test, null = "punif", min = 0, max = 0.500001)
+
+test <- tn4 |> filter(carb_group == "NDM, OXA") |> pull(prop)
+goftest::ad.test(test, null = "punif", min = 0, max = 0.500001)
+```
+
+### Exact binomal test: novel carbapenemase alleles
+
+```{r}
+#| label: stats-exact-binomial
+#| warning: false
+
+mismatches2 <- amr |> 
+  filter(accession %in% (meta |> pull(accession))) |> 
+  filter(str_detect(gene, "blaNDM|blaKPC|blaOXA-48|blaOXA-181|blaOXA-232|blaOXA-244|blaOXA-204|blaOXA-1205|blaOXA-1207|blaVIM|blaIMP") | str_detect(closest_reference, "OXA-48|OXA-181|OXA-232|OXA-244|OXA-204|OXA-1205|OXA-1207")) |> 
+  filter(status != "ALLELEX" & status != "PARTIAL_CONTIG_ENDX") |> 
+  left_join(meta_raw |> select(accession, multicarb_type, multicarb_location, carb), by = "accession") |> 
+  filter(!is.na(multicarb_type)) |> 
+  mutate(multicarb_type = ifelse(multicarb_type == "different types", "different families", "same family")) |> 
+  group_by(gene, status) |> 
+  count(multicarb_type)
+
+binom.test(x = (mismatches2  |> ungroup()  |> filter(multicarb_type == "same family")  |> summarize(n = sum(n)) |> pull()), 
+  n = (mismatches2  |> ungroup()  |> summarize(n = sum(n)) |> pull()), 
+  p=0.5, 
+  alternative = "two.sided")
+
+```
+
+### Firth's penalised binary logistic regression: longitudinal KPC/NDM
+
+```{r}
+#| label: stats-firth-year-kn
+#| warning: false
+
+kn_stats <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(!is.na(year)) |> 
+  mutate(year = as.numeric(year)) |> 
+  mutate(carb_group_plotting = case_when(
+    str_count(carb_group, ",") > 1 ~ "other",
+    carb_group == "NDM, VIM" ~ "other",
+    carb_group == "IMP, OXA" ~ "other",
+    carb_group == "IMP, VIM" ~ "other",
+    TRUE ~ carb_group )) |> 
+  mutate(carb_group_plotting = droplevels(as.factor(carb_group_plotting))) |> 
+  mutate(carb_group_plotting = relevel(carb_group_plotting, ref = "KPC, NDM"))
+
+# Create the binary outcome variable 
+kn_stats$target_binary <- ifelse(
+  kn_stats$carb_group_plotting == "KPC, NDM", 1, 0
+)
+
+# Center the year variable (starts at 1 instead of calendar year) - this brings the intercept down from the billions to a normal scale
+kn_stats$year_centered <- kn_stats$year - min(kn_stats$year) + 1
+
+# Run Firth's Penalized Binary Logistic Regression
+binary_firth_model <- logistf(
+  target_binary ~ year_centered, 
+  data = kn_stats
+)
+
+summary(binary_firth_model)
+
+# Extract the raw log-odds coefficients and profile confidence intervals
+log_odds_coef <- coef(binary_firth_model)
+log_odds_ci   <- confint(binary_firth_model)
+
+# Convert them to the odds ratio scale 
+odds_ratios <- exp(log_odds_coef)
+ci_exponentiated <- exp(log_odds_ci)
+
+# print results
+results_table <- cbind(OR = odds_ratios, 
+                       Lower_95_CI = ci_exponentiated[,1], 
+                       Upper_95_CI = ci_exponentiated[,2])
+
+print(results_table["year_centered", , drop = FALSE])
+```
+
+### Firth's penalised binary logistic regression: longitudinal NDM/OXA
+
+```{r}
+#| label: stats-firth-year-no
+#| warning: false
+
+no_stats <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(!is.na(year)) |> 
+  mutate(year = as.numeric(year)) |> 
+  mutate(carb_group_plotting = case_when(
+    str_count(carb_group, ",") > 1 ~ "other",
+    carb_group == "NDM, VIM" ~ "other",
+    carb_group == "IMP, OXA" ~ "other",
+    carb_group == "IMP, VIM" ~ "other",
+    TRUE ~ carb_group )) |> 
+  mutate(carb_group_plotting = droplevels(as.factor(carb_group_plotting))) |> 
+  mutate(carb_group_plotting = relevel(carb_group_plotting, ref = "NDM, OXA"))
+
+# Create the binary outcome variable 
+no_stats$target_binary <- ifelse(
+  no_stats$carb_group_plotting == "NDM, OXA", 1, 0
+)
+
+# Center the year variable (starts at 1 instead of calendar year) - this brings the intercept down from the billions to a normal scale
+no_stats$year_centered <- no_stats$year - min(no_stats$year) + 1
+
+# Run Firth's Penalized Binary Logistic Regression
+binary_firth_model <- logistf(
+  target_binary ~ year_centered, 
+  data = no_stats
+)
+
+summary(binary_firth_model)
+
+# Extract the raw log-odds coefficients and profile confidence intervals
+log_odds_coef <- coef(binary_firth_model)
+log_odds_ci   <- confint(binary_firth_model)
+
+# Convert them to the odds ratio scale 
+odds_ratios <- exp(log_odds_coef)
+ci_exponentiated <- exp(log_odds_ci)
+
+# print results
+results_table <- cbind(OR = odds_ratios, 
+                       Lower_95_CI = ci_exponentiated[,1], 
+                       Upper_95_CI = ci_exponentiated[,2])
+
+print(results_table["year_centered", , drop = FALSE])
+
+```
+
+### Firth's penalised binary logistic regression: consolidation of KPC/NDM onto one plasmid backbone
+
+```{r}
+#| label: stats-firth-consolidation-kn
+#| warning: false
+
+kn_stats2 <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(!is.na(year)) |> 
+  mutate(year = as.numeric(year)) |> 
+  filter(carb_group == "KPC, NDM")
+
+kn_oneplas_list <- gene |> 
+  filter(location == "plasmid") |> 
+  group_by(accession, contig_id) |> 
+  summarize(gene = toString(gene, sep=", ")) |> 
+  filter(str_detect(gene, "NDM") & str_detect(gene, "KPC")) |> 
+  pull(accession) # one duplicate accession
+
+# Create the binary outcome variable 
+kn_stats2$target_binary <- ifelse(
+  kn_stats2$accession %in% kn_oneplas_list, 1, 0
+)
+
+# Center the year variable (starts at 1 instead of calendar year) - this brings the intercept down from the billions to a normal scale
+kn_stats2$year_centered <- kn_stats2$year - min(kn_stats2$year) + 1
+
+# Run Firth's Penalized Binary Logistic Regression
+binary_firth_model <- logistf(
+  target_binary ~ year_centered, 
+  data = kn_stats2
+)
+
+summary(binary_firth_model)
+
+# Extract the raw log-odds coefficients and profile confidence intervals
+log_odds_coef <- coef(binary_firth_model)
+log_odds_ci   <- confint(binary_firth_model)
+
+# Convert them to the odds ratio scale 
+odds_ratios <- exp(log_odds_coef)
+ci_exponentiated <- exp(log_odds_ci)
+
+# print results
+results_table <- cbind(OR = odds_ratios, 
+                       Lower_95_CI = ci_exponentiated[,1], 
+                       Upper_95_CI = ci_exponentiated[,2])
+
+print(results_table["year_centered", , drop = FALSE])
+```
+
+### Firth's penalised binary logistic regression: consolidation of NDM/OXA onto one plasmid backbone
+
+```{r}
+#| label: stats-firth-consolidation-no
+#| warning: false
+
+no_stats2 <- meta |> 
+  #filter(dereplicate == "unique") |> 
+  filter(!is.na(year)) |> 
+  mutate(year = as.numeric(year)) |> 
+  filter(carb_group == "NDM, OXA")
+
+no_oneplas_list <- gene |> 
+  filter(location == "plasmid") |> 
+  group_by(accession, contig_id) |> 
+  summarize(gene = toString(gene, sep=", ")) |> 
+  filter(str_detect(gene, "NDM") & str_detect(gene, "OXA")) |> 
+  pull(accession)
+
+# 1. Create the binary outcome variable 
+no_stats2$target_binary <- ifelse(
+  no_stats2$accession %in% no_oneplas_list, 1, 0
+)
+
+# Center the year variable (starts at 1 instead of calendar year) - this brings the intercept down from the billions to a normal scale
+no_stats2$year_centered <- no_stats2$year - min(no_stats2$year) + 1
+
+# Run Firth's Penalized Binary Logistic Regression
+binary_firth_model <- logistf(
+  target_binary ~ year_centered, 
+  data = no_stats2
+)
+
+summary(binary_firth_model)
+
+# Extract the raw log-odds coefficients and profile confidence intervals
+log_odds_coef <- coef(binary_firth_model)
+log_odds_ci   <- confint(binary_firth_model)
+
+# Convert them to the odds ratio scale 
+odds_ratios <- exp(log_odds_coef)
+ci_exponentiated <- exp(log_odds_ci)
+
+# print results
+results_table <- cbind(OR = odds_ratios, 
+                       Lower_95_CI = ci_exponentiated[,1], 
+                       Upper_95_CI = ci_exponentiated[,2])
+
+print(results_table["year_centered", , drop = FALSE])
+```
