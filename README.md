@@ -1,5 +1,5 @@
 
-This repository accompanies the manuscript: Global genomic epidemiology of multi-carbapenemase Enterobacterales.
+This repository accompanies the manuscript: Global genomic epidemiology of multi-carbapenemase Enterobacterales (available as a preprint on bioRxiv: [https://doi.org/10.64898/2026.10.07.757280](https://doi.org/10.64898/2026.10.07.757280))
 
 Scripts for plots and statistical analysis in R are provided as a Quarto file `code.qmd` with the corresponding rendered HTML file `code.html`. Data files required to run the code are included in the `data/` folder. The HTML file can be viewed in GitHub by clicking the `code.html.md` file. 
 
